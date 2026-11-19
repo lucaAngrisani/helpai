@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>HelpAI</title>
+<link rel="stylesheet" href="/app.css" />
+</head>
+<body>
+<header class="topbar">
+  <button id="btn-toggle-explorer" class="icon" title="Mostra/nascondi explorer">☰</button>
+  <strong>HelpAI</strong>
+  <span id="root-label" class="muted">progetto non configurato</span>
+  <span class="spacer"></span>
+  <span id="counters" class="muted"></span>
+  <button id="btn-rescan">Rescan</button>
+  <button id="btn-change-root">Cambia progetto</button>
+  <button id="btn-settings" class="icon" title="Configurazioni">⚙</button>
+</header>
+
+<section id="setup" class="panel hidden">
+  <h2>Imposta il progetto da analizzare</h2>
+  <p class="muted">Inserisci il percorso assoluto della cartella del progetto. Puoi cambiarlo in seguito.</p>
+  <div class="row">
+    <input id="root-input" type="text" placeholder="/percorso/assoluto/al/progetto" />
+    <button id="btn-save-root">Salva</button>
+  </div>
+  <p id="setup-error" class="error"></p>
+</section>
+
+<section id="view-config" class="panel hidden">
+  <div class="row">
+    <h2 style="margin:0">Configurazioni</h2>
+    <span class="spacer"></span>
+    <button id="btn-back">← Torna al progetto</button>
+  </div>
+  <div class="cfg-block">
+    <strong>Harness Hermes</strong>
+    <div class="row" style="flex-wrap:wrap;margin-top:6px">
+      <input id="harness-compose" type="text" placeholder="/percorso/assoluto/hermes/docker-compose.yml" />
+      <input id="harness-model" type="text" placeholder="modello (vuoto = default)" />
+      <button id="btn-save-harness">Salva</button>
+      <button id="btn-test-harness">Testa harness</button>
+    </div>
+    <p id="harness-status" class="muted"></p>
+  </div>
+</section>
+
+<div id="workspace" class="hidden">
+  <aside id="explorer" class="sec">
+    <div class="sec-head">
+      <strong>Esplora</strong>
+      <span class="spacer"></span>
+      <button class="icon" data-hide="explorer" title="Nascondi">◂</button>
+    </div>
+    <div class="sec-body">
+      <div class="row ex-tools">
+        <span id="ex-selected" class="muted"></span>
+        <span class="spacer"></span>
+        <button id="btn-new-spec" disabled>+ .helpai.md</button>
+      </div>
+      <p id="ex-msg" class="muted"></p>
+      <div id="tree"></div>
+    </div>
+  </aside>
+
+  <div id="center">
+    <section id="sec-errors" class="sec hidden">
+      <div class="sec-head"><strong>Errori di validazione</strong><span class="spacer"></span><button class="icon" data-hide="sec-errors" title="Minimizza">▾</button></div>
+      <div class="sec-body"><div id="errors" class="errors"></div></div>
+    </section>
+
+    <section id="sec-graph" class="sec">
+      <div class="sec-head"><strong>Grafo</strong><span class="spacer"></span><button class="icon" data-hide="sec-graph" title="Minimizza">▾</button></div>
+      <div class="sec-body">
+        <main id="main">
+          <div id="graph-wrap">
+            <div id="graph"></div>
+            <div id="graph-empty" class="muted hidden">Nessuna spec trovata nel progetto.</div>
+          </div>
+          <aside id="detail" class="hidden-detail">
+            <div class="row"><span class="spacer"></span><button id="btn-close-detail" title="Chiudi dettaglio">✕</button></div>
+            <p class="muted">Seleziona un nodo nel grafo o una spec nell'explorer.</p>
+          </aside>
+        </main>
+      </div>
+    </section>
+
+    <section id="sec-console" class="sec">
+      <div class="sec-head">
+        <strong>Console</strong>
+        <span class="spacer"></span>
+        <label>Modalità
+          <select id="mode">
+            <option value="yolo">YOLO</option>
+            <option value="ctrl">CTRL</option>
+          </select>
+        </label>
+        <button class="icon" data-hide="sec-console" title="Minimizza">▾</button>
+      </div>
+      <div class="sec-body">
+        <pre id="log"></pre>
+        <div id="approvals"></div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<script src="/vendor/cytoscape.min.js"></script>
+<script type="module" src="/app.js"></script>
+</body>
+</html>
