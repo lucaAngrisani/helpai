@@ -28,7 +28,7 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 #workspace.no-explorer { grid-template-columns: minmax(0, 1fr); }
 #workspace.no-explorer #explorer { display: none; }
 #explorer { border-right: 1px solid #8884; min-height: 0; }
-#explorer > .sec-body { overflow: auto; padding: 6px 8px; }
+#explorer > .sec-body { overflow: auto; padding: 0px 6px 8px; }
 #explorer .ex-tools { position: sticky; top: 0; z-index: 2; background: Canvas; padding: 4px 0; }
 .ex-tools { flex-wrap: wrap; margin-bottom: 4px; }
 .ex-row { padding: 3px 6px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-radius: 4px; user-select: none; }
