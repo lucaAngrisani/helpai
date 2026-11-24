@@ -48,5 +48,52 @@ function buildBody(ctx: SpecContext): string {
     parts.push(f.content === null ? '(file binario, non incluso)' : '```\n' + f.content + '\n```');
     parts.push('');
   }
+
+  if (ctx.referenced.length > 0) {
+    parts.push('## File di riferimento (SOLO LETTURA)');
+    parts.push('Questi file sono collegati dalla spec. Usali per capire contratti, tipi e logica condivisa.');
+    parts.push('NON modificarli: il loro contenuto è solo contesto, la modifica va fatta nella cartella target.');
+    parts.push('');
+    for (const r of ctx.referenced) {
+      parts.push(`### ${r.rel}`);
+      parts.push('```\n' + r.content + '\n```');
+      parts.push('');
+    }
+  }
   return parts.join('\n');
 }
+
+/**
+ * Reverse task (code -> spec): the harness reads the code of the target folder
+ * and rewrites ONLY its spec. Output uses the same "files" contract, with the
+ * spec file as the single entry.
+ */
+export function buildReversePrompt(ctx: SpecContext): string {
+  const specName = ctx.specRel.split('/').pop() ?? ctx.specRel;
+  return [
+    '# Task di allineamento HelpAI (Code -> Spec)',
+    `Cartella target: ${ctx.folderRel}`,
+    `Spec da riscrivere: ${ctx.specRel}`,
+    '',
+    '## Regole ferree',
+    `- Descrivi il codice REALE della cartella "${ctx.folderRel}" (solo file diretti) nella spec.`,
+    '- Non modificare o creare alcun file diverso dalla spec.',
+    '- Non elencare né descrivere file che non esistono.',
+    '- Mantieni i link verso le altre spec già presenti nella spec attuale, se ancora validi.',
+    '',
+    '## Spec attuale (da aggiornare)',
+    ctx.specContent,
+    '',
+    '## File della cartella target',
+    ...ctx.folderFiles.map((f) =>
+      `### ${f.name}\n` + (f.content === null ? '(binario, non incluso)' : '```\n' + f.content + '\n```'),
+    ),
+    '',
+    '## Formato della risposta (obbligatorio)',
+    'NON scrivere file sul disco. Rispondi solo con un blocco JSON:',
+    '```json',
+    `{"files": {"${specName}": "<contenuto COMPLETO della nuova spec>"}}`,
+    '```',
+  ].join('\n');
+}
+

@@ -33,7 +33,7 @@ afterEach(async () => {
 function newConfigFile(verified = true): string {
   cfgDir = mkdtempSync(path.join(os.tmpdir(), 'helpai-cfg-'));
   const file = path.join(cfgDir, 'config.json');
-  writeFileSync(file, JSON.stringify({ rootPath: null, hermesModel: null, hermesComposeFile: null, harnessTestedOk: verified }));
+  writeFileSync(file, JSON.stringify({ rootPath: null, harnessCommand: null, harnessTestedOk: verified }));
   return file;
 }
 
@@ -52,17 +52,23 @@ describe('gate Spec->Code sull\'harness Hermes', () => {
     expect(res.json().error).toMatch(/harness non verificato/);
   });
 
-  it('PUT del modello azzera il test: va ripetuto prima di allineare', async () => {
+  it('PUT del comando azzera il test: va ripetuto prima di allineare', async () => {
     const a = await server(new MockHarness(() => {}), newConfigFile(true));
-    const res = await a.inject({ method: 'PUT', url: '/api/harness/hermes', payload: { model: 'gpt-x', composeFile: '/tmp/docker-compose.yml' } });
+    const res = await a.inject({ method: 'PUT', url: '/api/harness', payload: { command: 'claude -p {prompt}' } });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ hermesModel: 'gpt-x', harnessTestedOk: false });
+    expect(res.json()).toMatchObject({ harnessCommand: 'claude -p {prompt}', harnessTestedOk: false });
   });
 
-  it('modello vuoto salva null, cioè default di Hermes', async () => {
+  it('comando vuoto è rifiutato (400)', async () => {
     const a = await server();
-    const res = await a.inject({ method: 'PUT', url: '/api/harness/hermes', payload: { model: '  ', composeFile: '/tmp/docker-compose.yml' } });
-    expect(res.json().hermesModel).toBeNull();
+    const res = await a.inject({ method: 'PUT', url: '/api/harness', payload: { command: '   ' } });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('virgolette non chiuse sono rifiutate (400)', async () => {
+    const a = await server();
+    const res = await a.inject({ method: 'PUT', url: '/api/harness', payload: { command: 'claude -p "{prompt}' } });
+    expect(res.statusCode).toBe(400);
   });
 });
 
@@ -168,11 +174,11 @@ describe('API /api/specs/:id', () => {
     expect(readFileSync(path.join(root, CARD), 'utf8')).toBe('# Nuova');
   });
 
-  it('reverse-align risponde 501', async () => {
-    const a = await server();
+  it('reverse-align senza harness verificato risponde 409', async () => {
+    const a = await server(new MockHarness(() => {}), newConfigFile(false));
     await configure(a, fixture(base));
     const res = await a.inject({ method: 'POST', url: `/api/specs/${encodeURIComponent(CARD)}/reverse-align` });
-    expect(res.statusCode).toBe(501);
+    expect(res.statusCode).toBe(409);
   });
 });
 

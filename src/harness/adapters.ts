@@ -37,35 +37,71 @@ export class MockHarness implements CodingHarness {
   }
 }
 
-export interface HermesHarnessOptions {
-  /** Nome del servizio docker compose che esegue Hermes (default: hermes-agent). */
-  service?: string;
-  /** File docker-compose.yml di Hermes. */
-  composeFile: string;
-  /** Modello da usare. Vuoto/undefined = default di Hermes (nessun flag -m). */
-  model?: string;
+/**
+ * Harness a comando configurabile: l'utente scrive il comando che lancia il proprio harness.
+ * Il prompt sostituisce il segnaposto `{prompt}`; se manca, il prompt va su stdin.
+ * Esempi:
+ *   docker compose -f /path/docker-compose.yml exec -T hermes-agent hermes chat -Q -q {prompt}
+ *   claude -p {prompt}
+ *   copilot -p {prompt}
+ * Il comando viene diviso come una shell minimale (apici e virgolette ammessi), ma eseguito
+ * senza shell: nessuna espansione di variabili, nessun pipe. Il prompt è un singolo argomento.
+ */
+export function parseCommandLine(line: string): string[] {
+  const out: string[] = [];
+  let cur = '';
+  let quote: '"' | "'" | null = null;
+  let hasToken = false;
+  for (const ch of line.trim()) {
+    if (quote) {
+      if (ch === quote) quote = null;
+      else cur += ch;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      hasToken = true;
+    } else if (/\s/.test(ch)) {
+      if (hasToken) {
+        out.push(cur);
+        cur = '';
+        hasToken = false;
+      }
+    } else {
+      cur += ch;
+      hasToken = true;
+    }
+  }
+  if (quote) throw new Error('comando harness: virgolette non chiuse');
+  if (hasToken) out.push(cur);
+  return out;
 }
 
-/**
- * Harness Hermes: lancia `hermes chat -Q -q <prompt>` nel container del servizio Hermes
- * tramite `docker compose exec -T`. Il modello è opzionale: senza valore resta il default.
- * Il comando è eseguito con spawn senza shell: il prompt non viene interpretato.
- */
-export class HermesHarness implements CodingHarness {
-  readonly name = 'hermes';
+export interface CommandHarnessOptions {
+  /** Nome leggibile mostrato in UI/log. */
+  name?: string;
+  /** Comando completo, es. `claude -p {prompt}`. */
+  command: string;
+}
 
-  constructor(private readonly opts: HermesHarnessOptions) {}
+export class CommandHarness implements CodingHarness {
+  readonly name: string;
 
-  buildArgs(prompt: string): string[] {
-    const args = ['compose', '-f', this.opts.composeFile, 'exec', '-T', this.opts.service ?? 'hermes-agent', 'hermes', 'chat', '-Q'];
-    if (this.opts.model && this.opts.model.trim() !== '') args.push('-m', this.opts.model.trim());
-    args.push('-q', prompt);
-    return args;
+  constructor(private readonly opts: CommandHarnessOptions) {
+    this.name = opts.name ?? 'command';
+    const tokens = parseCommandLine(opts.command);
+    if (tokens.length === 0) throw new Error('comando harness vuoto');
+  }
+
+  /** Argomenti finali e se il prompt va su stdin (nessun {prompt} nel comando). */
+  buildInvocation(prompt: string): { cmd: string; args: string[]; stdin: string } {
+    const tokens = parseCommandLine(this.opts.command);
+    const hasPlaceholder = tokens.some((t) => t.includes('{prompt}'));
+    const args = hasPlaceholder ? tokens.map((t) => t.split('{prompt}').join(prompt)) : tokens.slice(1);
+    return { cmd: tokens[0]!, args: hasPlaceholder ? args.slice(1) : args, stdin: hasPlaceholder ? '' : prompt };
   }
 
   run(prompt: string, opts: HarnessRunOptions): Promise<HarnessRunResult> {
-    const [cmd, ...args] = ['docker', ...this.buildArgs(prompt)];
-    return runProcess(cmd, args, '', opts);
+    const { cmd, args, stdin } = this.buildInvocation(prompt);
+    return runProcess(cmd, args, stdin, opts);
   }
 }
 

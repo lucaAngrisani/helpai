@@ -3,15 +3,17 @@ import path from 'node:path';
 
 export interface AppConfig {
   rootPath: string | null;
-  /** Modello Hermes (stringa libera). Vuoto/null = default di Hermes. */
-  hermesModel: string | null;
-  /** Percorso docker-compose.yml di Hermes. */
-  hermesComposeFile: string | null;
+  /**
+   * Comando che lancia l'harness di coding. Il segnaposto {prompt} riceve il prompt.
+   * Esempi: `docker compose -f /path/docker-compose.yml exec -T hermes-agent hermes chat -Q -q {prompt}`,
+   * `claude -p {prompt}`. Null = nessun harness configurato.
+   */
+  harnessCommand: string | null;
   /** Ultimo test dell'harness riuscito per la configurazione corrente (null = non testato). */
   harnessTestedOk: boolean;
 }
 
-/** Persistent app config (rootPath dalla Web UI, configurazione harness). */
+/** Persistent app config (rootPath dalla Web UI, comando harness). */
 export class ConfigStore {
   constructor(readonly file: string) {}
 
@@ -20,12 +22,11 @@ export class ConfigStore {
       const raw = JSON.parse(await fs.readFile(this.file, 'utf8')) as Partial<AppConfig>;
       return {
         rootPath: typeof raw.rootPath === 'string' ? raw.rootPath : null,
-        hermesModel: typeof raw.hermesModel === 'string' && raw.hermesModel.trim() !== '' ? raw.hermesModel.trim() : null,
-        hermesComposeFile: typeof raw.hermesComposeFile === 'string' ? raw.hermesComposeFile : null,
+        harnessCommand: typeof raw.harnessCommand === 'string' && raw.harnessCommand.trim() !== '' ? raw.harnessCommand.trim() : null,
         harnessTestedOk: raw.harnessTestedOk === true,
       };
     } catch {
-      return { rootPath: null, hermesModel: null, hermesComposeFile: null, harnessTestedOk: false };
+      return { rootPath: null, harnessCommand: null, harnessTestedOk: false };
     }
   }
 

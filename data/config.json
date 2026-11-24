@@ -1,6 +1,5 @@
 {
   "rootPath": "/home/lucart/hermes/workspace/helpai/project-test",
-  "hermesModel": null,
-  "hermesComposeFile": "/home/lucart/hermes/docker-compose.yml",
+  "harnessCommand": "docker compose -f /home/lucart/hermes/docker-compose.yml exec -T hermes-agent hermes chat -Q -q {prompt}",
   "harnessTestedOk": true
 }

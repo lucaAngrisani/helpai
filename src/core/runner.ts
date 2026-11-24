@@ -5,13 +5,14 @@ import { buildContext, type SpecContext } from './context.js';
 import { lineDiff } from './diff.js';
 import { computeFingerprint, appendHistory, loadState, saveState, type HistorySnapshot } from './state.js';
 import { diffSnapshots, revertChange, snapshotProject, type FileChange, type Snapshot } from './snapshot.js';
-import { buildPrompt } from '../harness/prompt.js';
+import { buildPrompt, buildReversePrompt } from '../harness/prompt.js';
 import { parseProposal, validateProposalNames } from './proposal.js';
 import type { CodingHarness } from '../harness/adapters.js';
 import { defaultResolver } from './resolver.js';
 import type { ValidationError } from './types.js';
 
 export type RunMode = 'yolo' | 'ctrl';
+export type RunTask = 'spec-to-code' | 'code-to-spec';
 
 export interface ChangeDecision {
   change: FileChange;
@@ -20,6 +21,8 @@ export interface ChangeDecision {
 }
 
 export interface RunOptions extends AnalyzeOptions {
+  /** 'code-to-spec': the harness rewrites only the spec from the code. Default: 'spec-to-code'. */
+  task?: RunTask;
   mode: RunMode;
   harness: CodingHarness;
   /** Required in CTRL mode: true keeps the change, false reverts it. */
@@ -75,15 +78,23 @@ export async function alignSpec(rootPath: string, specRel: string, opts: RunOpti
   const before = await snapshotProject(root, opts.ignoredDirs ?? []);
   opts.onLog?.(`[helpai] harness=${opts.harness.name} mode=${opts.mode} target=${ctx.folderRel}`);
 
-  const run = await opts.harness.run(buildPrompt(ctx, opts.contract ?? 'direct'), {
-    cwd: root,
-    onLog: opts.onLog,
-    timeoutMs: opts.timeoutMs,
-  });
-  if (opts.contract === 'files') {
+  const run = await opts.harness.run(
+    opts.task === 'code-to-spec' ? buildReversePrompt(ctx) : buildPrompt(ctx, opts.contract ?? 'direct'),
+    { cwd: root, onLog: opts.onLog, timeoutMs: opts.timeoutMs },
+  );
+  if (opts.contract === 'files' || opts.task === 'code-to-spec') {
     if (run.exitCode !== 0) throw new Error(`harness terminato con exit ${run.exitCode}: nessuna modifica applicata`);
     const proposed = parseProposal(run.output);
-    validateProposalNames(proposed);
+    if (opts.task === 'code-to-spec') {
+      // Reverse mode: the only allowed output is the target spec itself.
+      const specName = path.basename(ctx.specRel);
+      const names = Object.keys(proposed);
+      if (names.length !== 1 || names[0] !== specName) {
+        throw new Error(`code→spec: il harness deve restituire solo ${specName}`);
+      }
+    } else {
+      validateProposalNames(proposed);
+    }
     const folderAbs = ctx.folderRel === '.' ? root : path.join(root, ...ctx.folderRel.split('/'));
     for (const [name, content] of Object.entries(proposed)) {
       await fs.writeFile(path.join(folderAbs, name), content, 'utf8');
@@ -97,7 +108,7 @@ export async function alignSpec(rootPath: string, specRel: string, opts: RunOpti
   const reverted: RunResult['reverted'] = [];
 
   for (const change of changes) {
-    if (change.isSpec) {
+    if (change.isSpec && opts.task !== 'code-to-spec') {
       await revertChange(root, before, change);
       reverted.push({ change, reason: 'spec-file' });
     } else if (!change.inPerimeter) {
@@ -106,7 +117,10 @@ export async function alignSpec(rootPath: string, specRel: string, opts: RunOpti
     }
   }
 
-  for (const change of changes.filter((c) => c.inPerimeter && !c.isSpec)) {
+  const candidates = changes.filter(
+    (c) => c.inPerimeter && (!c.isSpec || opts.task === 'code-to-spec'),
+  );
+  for (const change of candidates) {
     if (opts.mode === 'yolo') {
       applied.push(change);
       continue;

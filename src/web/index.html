@@ -35,10 +35,10 @@
     <button id="btn-back">← Torna al progetto</button>
   </div>
   <div class="cfg-block">
-    <strong>Harness Hermes</strong>
+    <strong>Harness di coding</strong>
+    <p class="muted" style="margin:4px 0">Comando che lancia il tuo harness. <code>{prompt}</code> viene sostituito dal prompt. Es.: <code>claude -p {prompt}</code> oppure <code>docker compose -f /percorso/docker-compose.yml exec -T hermes-agent hermes chat -Q -q {prompt}</code></p>
     <div class="row" style="flex-wrap:wrap;margin-top:6px">
-      <input id="harness-compose" type="text" placeholder="/percorso/assoluto/hermes/docker-compose.yml" />
-      <input id="harness-model" type="text" placeholder="modello (vuoto = default)" />
+      <input id="harness-command" type="text" style="flex:1;min-width:320px" placeholder="es. claude -p {prompt}" />
       <button id="btn-save-harness">Salva</button>
       <button id="btn-test-harness">Testa harness</button>
     </div>
@@ -73,17 +73,21 @@
     <section id="sec-graph" class="sec">
       <div class="sec-head"><strong>Grafo</strong><span class="spacer"></span><button class="icon" data-hide="sec-graph" title="Minimizza">▾</button></div>
       <div class="sec-body">
-        <main id="main">
-          <div id="graph-wrap">
-            <div id="graph"></div>
-            <div id="graph-empty" class="muted hidden">Nessuna spec trovata nel progetto.</div>
-          </div>
-          <aside id="detail" class="hidden-detail">
-            <div class="row"><span class="spacer"></span><button id="btn-close-detail" title="Chiudi dettaglio">✕</button></div>
-            <p class="muted">Seleziona un nodo nel grafo o una spec nell'explorer.</p>
-          </aside>
-        </main>
+        <div id="graph-wrap">
+          <div id="graph"></div>
+          <div id="graph-empty" class="muted hidden">Nessuna spec trovata nel progetto.</div>
+        </div>
       </div>
+    </section>
+
+    <section id="sec-detail" class="sec hidden">
+      <div class="sec-head">
+        <strong id="detail-title">Dettaglio</strong>
+        <span class="spacer"></span>
+        <button class="icon" data-hide="sec-detail" title="Minimizza">▾</button>
+        <button class="icon" id="btn-close-detail" title="Chiudi">✕</button>
+      </div>
+      <div class="sec-body"><div id="detail"></div></div>
     </section>
 
     <section id="sec-console" class="sec">

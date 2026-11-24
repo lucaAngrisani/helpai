@@ -13,7 +13,7 @@ import { defaultResolver } from '../core/resolver.js';
 import { readHistory, loadState, statusOf, computeFingerprint } from '../core/state.js';
 import { compareFiles } from '../core/diff.js';
 import type { CodingHarness } from '../harness/adapters.js';
-import { HermesHarness } from '../harness/adapters.js';
+import { CommandHarness } from '../harness/adapters.js';
 import type { SpecGraph } from '../core/types.js';
 import { RunRegistry } from './runs.js';
 import { ConfigStore, validateRootPath } from './config.js';
@@ -69,33 +69,33 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     };
   }
 
-  // GET /api/config — rootPath e configurazione Hermes (la UI la usa per il primo avvio e il selettore)
+  // GET /api/config — rootPath e comando harness
   app.get('/api/config', async () => {
     const cfg = await store.load();
-    return { rootPath: root, configured: root !== null, hermesModel: cfg.hermesModel, hermesComposeFile: cfg.hermesComposeFile, harnessTestedOk: cfg.harnessTestedOk };
+    return { rootPath: root, configured: root !== null, harnessCommand: cfg.harnessCommand, harnessTestedOk: cfg.harnessTestedOk };
   });
 
-  // PUT /api/harness/hermes — salva modello (stringa libera, vuoto = default) e file compose.
-  // Ogni modifica azzera il test: va ripetuto prima di poter allineare.
-  app.put<{ Body: { model?: unknown; composeFile?: unknown } }>('/api/harness/hermes', async (req, reply) => {
+  // PUT /api/harness — salva il comando dell'harness. Ogni modifica azzera il test.
+  app.put<{ Body: { command?: unknown } }>('/api/harness', async (req, reply) => {
     const cur = await store.load();
-    const model = typeof req.body?.model === 'string' && req.body.model.trim() !== '' ? req.body.model.trim() : null;
-    const composeFile = typeof req.body?.composeFile === 'string' && req.body.composeFile.trim() !== '' ? req.body.composeFile.trim() : cur.hermesComposeFile;
-    if (!composeFile || !path.isAbsolute(composeFile)) {
-      return reply.code(400).send({ error: 'composeFile deve essere un percorso assoluto al docker-compose.yml di Hermes' });
+    const command = typeof req.body?.command === 'string' ? req.body.command.trim() : '';
+    if (command === '') return reply.code(400).send({ error: 'comando harness vuoto' });
+    try {
+      new CommandHarness({ command }); // valida la sintassi (virgolette) prima di salvare
+    } catch (err) {
+      return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) });
     }
-    await store.save({ ...cur, hermesModel: model, hermesComposeFile: composeFile, harnessTestedOk: false });
-    return { ok: true, hermesModel: model, hermesComposeFile: composeFile, harnessTestedOk: false };
+    await store.save({ ...cur, harnessCommand: command, harnessTestedOk: false });
+    return { ok: true, harnessCommand: command, harnessTestedOk: false };
   });
 
-  // POST /api/harness/hermes/test — esegue davvero Hermes con un prompt di prova.
-  app.post('/api/harness/hermes/test', async (_req, reply) => {
+  // POST /api/harness/test — esegue davvero il comando con un prompt di prova.
+  app.post('/api/harness/test', async (_req, reply) => {
     const cfg = await store.load();
-    if (!cfg.hermesComposeFile) return reply.code(400).send({ error: 'configura prima composeFile (PUT /api/harness/hermes)' });
-    const harness = new HermesHarness({ composeFile: cfg.hermesComposeFile, model: cfg.hermesModel ?? undefined });
-    const tmp = process.cwd();
+    if (!cfg.harnessCommand) return reply.code(400).send({ error: 'configura prima il comando harness (PUT /api/harness)' });
+    const harness = new CommandHarness({ command: cfg.harnessCommand });
     try {
-      const res = await harness.run('Rispondi solo con la parola OK', { cwd: tmp, timeoutMs: 120_000 });
+      const res = await harness.run('Rispondi solo con la parola OK', { cwd: process.cwd(), timeoutMs: 120_000 });
       const ok = res.exitCode === 0 && /\bOK\b/.test(res.output);
       await store.save({ ...cfg, harnessTestedOk: ok });
       return { ok, exitCode: res.exitCode, output: res.output.slice(-2000) };
@@ -162,6 +162,23 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     const name = path.basename(abs) || 'progetto';
     await fs.writeFile(path.join(abs, '.helpai.md'), `# ${name}\n\nDescrivi qui cosa deve fare questa cartella.\n`, { flag: 'wx' });
     return { ok: true, specRel: [dirRel, '.helpai.md'].filter(Boolean).join('/') };
+  });
+
+  // GET /api/fs/file?path=<rel> — sola lettura per i file non .helpai.md
+  app.get<{ Querystring: { path?: string } }>('/api/fs/file', async (req, reply) => {
+    if (!root) return notConfigured(reply);
+    const relPath = (req.query.path ?? '').split('\\').join('/').replace(/^\/+/, '');
+    if (!relPath) return reply.code(400).send({ error: 'path richiesto' });
+    if (relPath.endsWith('.helpai.md')) return reply.code(400).send({ error: 'le spec si leggono dall\'endpoint dedicato' });
+    const abs = path.resolve(root, relPath);
+    if (!abs.startsWith(root + path.sep)) return reply.code(400).send({ error: 'percorso fuori dal progetto' });
+    const st = await fs.stat(abs).catch(() => null);
+    if (!st || !st.isFile()) return reply.code(404).send({ error: 'file non trovato' });
+    const MAX = 512 * 1024;
+    if (st.size > MAX) return reply.code(413).send({ error: `file troppo grande (${st.size} byte, max ${MAX})` });
+    const buf = await fs.readFile(abs);
+    if (buf.includes(0)) return { path: relPath, binary: true, content: '' };
+    return { path: relPath, binary: false, content: buf.toString('utf8') };
   });
 
   // GET /api/project — stato generale, grafo, errori
@@ -232,7 +249,7 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     if (!root) return notConfigured(reply);
     const cfg = await store.load();
     if (!cfg.harnessTestedOk) {
-      return reply.code(409).send({ error: 'harness non verificato: esegui il test della configurazione Hermes prima di allineare' });
+      return reply.code(409).send({ error: 'harness non verificato: esegui il test dell harness prima di allineare' });
     }
     const mode = req.body?.mode ?? 'ctrl';
     if (mode !== 'yolo' && mode !== 'ctrl') return reply.code(400).send({ error: 'mode non valida' });
@@ -243,10 +260,8 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
       try {
         const result = await alignSpec(runRoot, specRel, {
           mode,
-          harness: cfg.hermesComposeFile
-            ? new HermesHarness({ composeFile: cfg.hermesComposeFile, model: cfg.hermesModel ?? undefined })
-            : opts.harness,
-          contract: cfg.hermesComposeFile ? 'files' : 'direct',
+          harness: cfg.harnessCommand ? new CommandHarness({ command: cfg.harnessCommand }) : opts.harness,
+          contract: cfg.harnessCommand ? 'files' : 'direct',
           timeoutMs: opts.timeoutMs,
           readSpec,
           onLog: (line) => runs.log(rec.id, line),
@@ -264,10 +279,42 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     return reply.code(202).send({ runId: rec.id, status: rec.status });
   });
 
-  // POST /api/specs/:id/reverse-align — Code -> Spec, non ancora implementato
-  app.post('/api/specs/:id/reverse-align', async (_req, reply) =>
-    reply.code(501).send({ error: 'Code -> Spec non ancora implementato' }),
-  );
+  // POST /api/specs/:id/reverse-align — Code -> Spec, asincrono.
+  // Stessi gate di align: harness verificato, modalità valida, perimetro e approvazione CTRL.
+  app.post<{ Params: { id: string }; Body: { mode?: string } }>('/api/specs/:id/reverse-align', async (req, reply) => {
+    if (!root) return notConfigured(reply);
+    const cfg = await store.load();
+    if (!cfg.harnessTestedOk) {
+      return reply.code(409).send({ error: 'harness non verificato: esegui il test dell harness prima di allineare' });
+    }
+    const mode = req.body?.mode ?? 'ctrl';
+    if (mode !== 'yolo' && mode !== 'ctrl') return reply.code(400).send({ error: 'mode non valida' });
+    const runRoot = root;
+    const specRel = fromId(req.params.id);
+    const rec = runs.create(req.params.id, mode);
+    void (async () => {
+      try {
+        const result = await alignSpec(runRoot, specRel, {
+          task: 'code-to-spec',
+          mode,
+          harness: cfg.harnessCommand ? new CommandHarness({ command: cfg.harnessCommand }) : opts.harness,
+          contract: 'files',
+          timeoutMs: opts.timeoutMs,
+          readSpec,
+          onLog: (line) => runs.log(rec.id, line),
+          approve: mode === 'ctrl' ? (d) => runs.requestApproval(rec.id, d) : undefined,
+        });
+        runs.finish(rec.id, result);
+      } catch (err) {
+        if (err instanceof BlockingValidationError) {
+          runs.fail(rec.id, `${err.message}: ${err.errors.map((e) => e.code).join(', ')}`);
+        } else {
+          runs.fail(rec.id, err instanceof Error ? err.message : String(err));
+        }
+      }
+    })();
+    return reply.code(202).send({ runId: rec.id, status: rec.status });
+  });
 
   app.get('/api/runs', async () => ({ runs: runs.list() }));
 

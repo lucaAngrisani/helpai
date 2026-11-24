@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { extractSpecLinks, resolveLocalLink } from './parser.js';
 import { dependencyOrder, type ReadSpec } from './analyze.js';
 import { isSpecFileName } from './scanner.js';
 import { toPosix } from './snapshot.js';
@@ -35,7 +36,46 @@ export interface SpecContext {
   folderFiles: FolderFile[];
   /** Immediate subdirectories, which are excluded from the perimeter. */
   ignoredSubdirs: string[];
+  /** Files referenced by links from the spec (other folders), read-only context. */
+  referenced: ReferencedFile[];
 }
+
+export interface ReferencedFile {
+  /** Path relative to the project root, posix. */
+  rel: string;
+  content: string;
+}
+
+const MAX_REFERENCED_FILES = 20;
+const MAX_REFERENCED_BYTES = 64 * 1024;
+
+/**
+ * Files pointed to by the spec's links (`[x](../other/x.helpai.md)`): the spec itself and its
+ * direct folder files. Read-only context for the harness, so changes stay minimal.
+ */
+async function collectReferenced(root: string, specPath: string, specContent: string): Promise<ReferencedFile[]> {
+  const out: ReferencedFile[] = [];
+  const seen = new Set<string>([specPath]);
+  for (const link of extractSpecLinks(specContent)) {
+    if (link.isUrl) continue;
+    const linked = resolveLocalLink(specPath, link);
+    if (seen.has(linked) || (!linked.startsWith(root + path.sep) && linked !== root)) continue;
+    seen.add(linked);
+    const linkedDir = path.dirname(linked);
+    const files: string[] = [linked];
+    for (const entry of await fs.readdir(linkedDir, { withFileTypes: true }).catch(() => [])) {
+      if (entry.isFile() && !isSpecFileName(entry.name)) files.push(path.join(linkedDir, entry.name));
+    }
+    for (const file of files) {
+      if (out.length >= MAX_REFERENCED_FILES) return out;
+      const buf = await fs.readFile(file).catch(() => null);
+      if (!buf || buf.includes(0) || buf.length > MAX_REFERENCED_BYTES) continue;
+      out.push({ rel: toPosix(path.relative(root, file)), content: buf.toString('utf8') });
+    }
+  }
+  return out;
+}
+
 
 export const sha256 = (data: string | Buffer): string => createHash('sha256').update(data).digest('hex');
 
@@ -88,5 +128,6 @@ export async function buildContext(
     inherited,
     folderFiles,
     ignoredSubdirs,
+    referenced: await collectReferenced(root, specPath, specContent),
   };
 }

@@ -6,8 +6,10 @@ const COLORS = { synced: '#27ae60', stale: '#e67e22', error: '#c0392b', never: '
 let cy = null;
 let selectedId = null;      // id della spec (es. "album/.helpai.md")
 let selectedDir = '';       // cartella selezionata nell'explorer ('' = radice)
+let selectedFile = null;    // file in sola lettura aperto nel dettaglio
 let expanded = new Set(['']);
 let es = null;
+let runTask = 'spec-to-code';
 let harnessOk = false;
 
 async function api(method, url, body) {
@@ -39,14 +41,13 @@ function showSetup(message = '') {
 async function loadHarness() {
   const cfg = await api('GET', '/api/config');
   harnessOk = !!cfg.harnessTestedOk;
-  $('harness-compose').value = cfg.hermesComposeFile || '';
-  $('harness-model').value = cfg.hermesModel || '';
+  $('harness-command').value = cfg.harnessCommand || '';
   $('harness-status').textContent = harnessOk ? 'Harness verificato' : 'Harness non verificato: Spec→Code bloccato';
 }
 
 async function saveHarness() {
   try {
-    await api('PUT', '/api/harness/hermes', { model: $('harness-model').value, composeFile: $('harness-compose').value.trim() });
+    await api('PUT', '/api/harness', { command: $('harness-command').value.trim() });
     await loadHarness();
   } catch (e) {
     $('harness-status').textContent = e.message;
@@ -56,7 +57,7 @@ async function saveHarness() {
 async function testHarness() {
   $('harness-status').textContent = 'Test in corso…';
   try {
-    const r = await api('POST', '/api/harness/hermes/test');
+    const r = await api('POST', '/api/harness/test');
     harnessOk = r.ok;
     $('harness-status').textContent = r.ok ? 'Harness verificato (risposta OK)' : `Test fallito (exit ${r.exitCode}): ${r.output || ''}`;
   } catch (e) {
@@ -127,9 +128,13 @@ async function renderTree() {
       if (open) await walk(d.rel, depth + 1);
     }
     for (const f of data.files) {
-      if (!f.spec) continue;
-      const specId = [dir, f.name].filter(Boolean).join('/');
-      rows.push(`<div class="ex-row spec${selectedId === specId ? ' sel' : ''}" style="padding-left:${6 + depth * 14 + 14}px" data-spec="${esc(specId)}">📄 ${esc(f.name)}</div>`);
+      const fileId = [dir, f.name].filter(Boolean).join('/');
+      const pad = `padding-left:${6 + depth * 14 + 14}px`;
+      if (f.spec) {
+        rows.push(`<div class="ex-row spec${selectedId === fileId ? ' sel' : ''}" style="${pad}" data-spec="${esc(fileId)}">📄 ${esc(f.name)}</div>`);
+      } else {
+        rows.push(`<div class="ex-row plain${selectedFile === fileId ? ' sel' : ''}" style="${pad}" data-file="${esc(fileId)}" title="Sola lettura">${esc(f.name)}<span class="ro-badge">RO</span></div>`);
+      }
     }
   }
   await walk('', 0);
@@ -138,7 +143,10 @@ async function renderTree() {
     el.onclick = () => onDirClick(el.dataset.dir);
   });
   $('tree').querySelectorAll('[data-spec]').forEach((el) => {
-    el.onclick = () => showDetail(el.dataset.spec);
+    el.onclick = () => { selectedFile = null; showDetail(el.dataset.spec); };
+  });
+  $('tree').querySelectorAll('[data-file]').forEach((el) => {
+    el.onclick = () => { selectedFile = el.dataset.file; showFile(el.dataset.file); };
   });
   await updateNewSpecButton();
 }
@@ -200,9 +208,20 @@ function renderErrors(errors) {
     '</ul>';
 }
 
+// Etichetta del nodo: solo la cartella parent (ultimo segmento) + nome file senza ".helpai.md"
+// "src/app/esempio/.helpai.md" → "esempio"; "src/app/esempio/test.helpai.md" → "esempio/test"; ".helpai.md" → "(radice)"
+const nodeLabel = (id) => {
+  const parts = id.replace(/\\/g, '/').split('/');
+  const file = parts.pop();
+  const folder = parts.length ? parts[parts.length - 1] : '';
+  const base = file.endsWith('.helpai.md') ? file.slice(0, -'.helpai.md'.length) : file;
+  if (!folder) return base ? base : '(radice)';
+  return base ? `${folder}/${base}` : folder;
+};
+
 function renderGraph(data) {
   const elements = [
-    ...data.nodes.map((n) => ({ data: { id: n.id, label: n.id.split('/').slice(-2).join('/'), status: n.status } })),
+    ...data.nodes.map((n) => ({ data: { id: n.id, label: nodeLabel(n.id), status: n.status } })),
     ...data.edges.map((e, i) => ({ data: { id: `e${i}`, source: e.from, target: e.to } })),
   ];
   if (!cy) {
@@ -226,25 +245,49 @@ function renderGraph(data) {
 }
 
 // ---- Layout: grafo ridotto quando c'è un nodo selezionato --------------------
-function setSelectionLayout(active) {
-  $('main').classList.toggle('has-selection', active);
-  $('detail').classList.toggle('hidden-detail', !active);
-  requestAnimationFrame(() => { if (cy) { cy.resize(); cy.fit(undefined, 20); } });
+function showDetailSection(visible) {
+  const sec = $('sec-detail');
+  sec.classList.toggle('hidden', !visible);
+  if (visible) sec.classList.remove('collapsed');
+  requestAnimationFrame(() => { if (cy) cy.resize(); });
 }
 
 $('btn-close-detail').onclick = () => {
   selectedId = null;
-  setSelectionLayout(false);
+  showDetailSection(false);
   renderTree();
 };
+
+// ---- File in sola lettura (non .helpai.md) ----------------------------------
+async function showFile(relPath) {
+  selectedId = null;
+  showDetailSection(true);
+  $('detail-title').textContent = `Sola lettura · ${relPath}`;
+  $('detail').innerHTML = '<p class="muted">Caricamento…</p>';
+  try {
+    const f = await api('GET', `/api/fs/file?path=${encodeURIComponent(relPath)}`);
+    $('detail').innerHTML = f.binary
+      ? '<p class="muted">File binario: anteprima non disponibile.</p>'
+      : `<pre class="ro-file">${esc(f.content)}</pre>`;
+  } catch (e) {
+    $('detail').innerHTML = `<p class="error">${esc(e.message)}</p>`;
+  }
+  renderTree();
+}
 
 // ---- Dettaglio spec ----------------------------------------------------------
 async function showDetail(id, keepDraft = false) {
   selectedId = id;
-  setSelectionLayout(true);
+  selectedFile = null;
+  showDetailSection(true);
   const d = await api('GET', `/api/specs/${encodeURIComponent(id)}`);
+  $('detail-title').textContent = `Spec · ${d.specPath}`;
   const draft = keepDraft && $('spec-editor') ? $('spec-editor').value : d.content;
-  const list = (items) => (items.length ? `<ul>${items.map((x) => `<li><code>${esc(x)}</code></li>`).join('')}</ul>` : '<p class="muted">nessuno</p>');
+  const list = (items, spec = false) => (items.length
+    ? `<ul>${items.map((x) => (spec
+        ? `<li><a href="#" class="spec-link" data-spec="${esc(x)}"><code>${esc(x)}</code></a></li>`
+        : `<li><code>${esc(x)}</code></li>`)).join('')}</ul>`
+    : '<p class="muted">nessuno</p>');
   $('detail').innerHTML = `
     <h3>${esc(d.specPath)}</h3>
     <p class="muted">cartella: <code>${esc(d.folderPath || '.')}</code> · stato: <span class="badge" style="background:${COLORS[d.status] || '#999'}">${esc(d.status)}</span></p>
@@ -256,11 +299,11 @@ async function showDetail(id, keepDraft = false) {
     </div>
     <details class="acc">
       <summary>Upstream (spec ereditate) <span class="count">${d.upstream.length}</span></summary>
-      ${list(d.upstream)}
+      ${list(d.upstream, true)}
     </details>
     <details class="acc">
       <summary>Downstream (spec che dipendono da questa) <span class="count">${d.downstream.length}</span></summary>
-      ${list(d.downstream)}
+      ${list(d.downstream, true)}
     </details>
     <details class="acc">
       <summary>File diretti nella cartella <span class="count">${d.folderFiles.length}</span></summary>
@@ -269,17 +312,23 @@ async function showDetail(id, keepDraft = false) {
     </details>
     <div class="row" style="margin-top:10px;flex-wrap:wrap">
       <button id="btn-align" ${d.status === 'error' ? 'disabled title="Risolvi prima gli errori"' : ''}>Allinea Codice (Spec → Code)</button>
-      <button disabled title="Non ancora implementato (M5+)">Allinea Spec dal Codice (Code → Spec)</button>
+      <button id="btn-reverse" ${d.status === 'error' ? 'disabled title="Risolvi prima gli errori"' : ''}>Allinea Spec dal Codice (Code → Spec)</button>
     </div>
     <p id="align-msg" class="muted"></p>
     <strong>Storico</strong>
     <div id="history"></div>`;
   $('spec-editor').value = draft;
+  $('detail').querySelectorAll('.spec-link').forEach((a) => {
+    a.onclick = (ev) => { ev.preventDefault(); showDetail(a.dataset.spec); };
+  });
   $('btn-save-spec').onclick = saveSpec;
-  $('btn-align').onclick = startAlign;
+  $('btn-align').onclick = () => startAlign('spec-to-code');
+  $('btn-reverse').onclick = () => startAlign('code-to-spec');
   if (!harnessOk) {
     $('btn-align').disabled = true;
     $('btn-align').title = "Testa prima l'harness Hermes (⚙ Configurazioni)";
+    $('btn-reverse').disabled = true;
+    $('btn-reverse').title = "Testa prima l'harness Hermes (⚙ Configurazioni)";
   }
   loadHistory(id);
 }
@@ -294,29 +343,74 @@ async function saveSpec() {
   }
 }
 
+const fmtDate = (iso) => {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())} ${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()}`;
+};
+
 async function loadHistory(id) {
   const box = $('history');
   if (!box) return;
   const h = await api('GET', `/api/specs/${encodeURIComponent(id)}/history`);
   if (!h.history.length) return (box.innerHTML = '<p class="muted">nessun run ancora</p>');
-  box.innerHTML = `<ul>${h.history.map((x) => `<li>${esc(x.at)} · ${esc(x.mode)} · file ${x.files.length ? x.files.map(esc).join(', ') : '—'}</li>`).join('')}</ul>
+  box.innerHTML = `<ul>${h.history.map((x) => `<li>${esc(fmtDate(x.at))} · ${esc(x.mode)} · file ${x.files.length ? x.files.map(esc).join(', ') : '—'}</li>`).join('')}</ul>
     <p class="muted">Confronto: scegli due run</p>
-    <div class="row"><select id="cmp-a">${h.history.map((x) => `<option value="${esc(x.id)}">${esc(x.at)}</option>`).join('')}</select>
-    <select id="cmp-b">${h.history.map((x) => `<option value="${esc(x.id)}">${esc(x.at)}</option>`).join('')}</select>
+    <div class="row"><select id="cmp-a">${h.history.map((x) => `<option value="${esc(x.id)}">${esc(fmtDate(x.at))}</option>`).join('')}</select>
+    <select id="cmp-b">${h.history.map((x) => `<option value="${esc(x.id)}">${esc(fmtDate(x.at))}</option>`).join('')}</select>
     <button id="btn-cmp">Confronta</button></div><pre id="cmp-out" class="muted"></pre>`;
   if (h.history.length > 1) $('cmp-b').selectedIndex = 1;
   $('btn-cmp').onclick = async () => {
-    const r = await api('GET', `/api/specs/${encodeURIComponent(id)}/history?a=${encodeURIComponent($('cmp-a').value)}&b=${encodeURIComponent($('cmp-b').value)}`);
-    $('cmp-out').textContent = JSON.stringify(r.comparison, null, 2);
+    const a = $('cmp-a').value;
+    const b = $('cmp-b').value;
+    if (a === b) { $('cmp-out').textContent = 'Scegli due run diversi.'; return; }
+    const r = await api('GET', `/api/specs/${encodeURIComponent(id)}/history?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`);
+    openCompare(id, a, b, r.comparison);
   };
 }
 
+// ---- Sezione confronto stile git --------------------------------------------
+function renderDiffLines(diff) {
+  if (!diff) return '<div class="dl ctx"><span class="dn"></span><span class="dn"></span><span class="dc">(nessuna differenza)</span></div>';
+  let oldN = 0;
+  let newN = 0;
+  return diff.split('\n').map((line) => {
+    const sign = line[0];
+    const text = esc(line.slice(1));
+    if (sign === '+') { newN++; return `<div class="dl add"><span class="dn"></span><span class="dn">${newN}</span><span class="dc">+ ${text}</span></div>`; }
+    if (sign === '-') { oldN++; return `<div class="dl del"><span class="dn">${oldN}</span><span class="dn"></span><span class="dc">- ${text}</span></div>`; }
+    oldN++; newN++;
+    return `<div class="dl ctx"><span class="dn">${oldN}</span><span class="dn">${newN}</span><span class="dc">  ${text}</span></div>`;
+  }).join('');
+}
+
+function openCompare(specId, a, b, comparison) {
+  showDetailSection(true);
+  $('detail-title').textContent = `Confronto · ${specId}`;
+  const files = comparison.filter((c) => c.status !== 'same');
+  const body = files.length
+    ? files.map((c) => `
+        <details class="cmp-file" open>
+          <summary><span class="badge">${esc(c.status)}</span> <code>${esc(c.name)}</code></summary>
+          <div class="diff">${renderDiffLines(c.diff)}</div>
+        </details>`).join('')
+    : '<p class="muted">Nessuna differenza tra i due run.</p>';
+  $('detail').innerHTML = `
+    <div class="row"><button id="btn-cmp-back">← Torna alla spec</button><span class="spacer"></span><span class="muted">${esc(a)} → ${esc(b)}</span></div>
+    ${body}`;
+  $('btn-cmp-back').onclick = () => showDetail(specId);
+}
+
+
 // ---- Allineamento e console live --------------------------------------------
-async function startAlign() {
+async function startAlign(task = 'spec-to-code') {
   try {
     const mode = $('mode').value;
-    const res = await api('POST', `/api/specs/${encodeURIComponent(selectedId)}/align`, { mode });
+    const suffix = task === 'code-to-spec' ? 'reverse-align' : 'align';
+    const res = await api('POST', `/api/specs/${encodeURIComponent(selectedId)}/${suffix}`, { mode });
     $('align-msg').textContent = `run avviato (${mode})`;
+    runTask = task;
     attachRun(res.runId);
   } catch (e) {
     $('align-msg').textContent = e.message;
@@ -328,11 +422,11 @@ function attachRun(runId) {
   $('log').textContent = '';
   $('approvals').innerHTML = '';
   es = new EventSource(`/api/runs/${runId}/stream`);
-  es.onmessage = (ev) => renderRun(JSON.parse(ev.data));
+  es.onmessage = (ev) => renderRun(JSON.parse(ev.data)).catch((e) => { $("align-msg").textContent = e.message; });
   es.onerror = () => {};
 }
 
-function renderRun(run) {
+async function renderRun(run) {
   $('log').textContent = run.logs.join('\n');
   $('log').scrollTop = $('log').scrollHeight;
   const ap = $('approvals');
@@ -355,6 +449,12 @@ function renderRun(run) {
       : `Completato: ${run.result.applied.length} file applicati, ${run.result.reverted.length} annullati`;
     $('align-msg').textContent = msg;
     refresh();
+    // Code→Spec: il file spec è stato riscritto dal run, ricarica il riquadro dal server.
+    if (run.status === 'done' && runTask === 'code-to-spec' && selectedId) {
+      const keepMsg = msg;
+      await showDetail(selectedId, false);
+      $('align-msg').textContent = keepMsg;
+    }
   }
 }
 
